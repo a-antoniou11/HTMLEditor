@@ -1,0 +1,29 @@
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\runtimes\win-x86\native\WebView2Loader.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\runtimes\win-x64\native\WebView2Loader.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\runtimes\win-arm64\native\WebView2Loader.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\HTML Editor.exe.config
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\HTML Editor.exe
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\HTML Editor.pdb
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\HtmlAgilityPack.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\HtmlAgilityPack.pdb
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\Microsoft.Bcl.AsyncInterfaces.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\Microsoft.Web.WebView2.Core.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\Microsoft.Web.WebView2.WinForms.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\Microsoft.Web.WebView2.Wpf.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\System.Buffers.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\System.Memory.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\System.Numerics.Vectors.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\System.Runtime.CompilerServices.Unsafe.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\System.Text.Encodings.Web.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\System.Text.Json.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\System.Threading.Tasks.Extensions.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\bin\Debug\System.ValueTuple.dll
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.csproj.AssemblyReference.cache
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.exe.config
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML_Editor.HTMLEditor.resources
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML_Editor.Properties.Resources.resources
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.csproj.GenerateResource.cache
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.csproj.CoreCompileInputs.cache
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.csproj.CopyComplete
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.exe
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.pdb

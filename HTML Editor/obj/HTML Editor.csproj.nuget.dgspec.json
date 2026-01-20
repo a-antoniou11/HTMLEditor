@@ -1,0 +1,65 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\Users\\aantoniou\\source\\repos\\HTML Editor\\HTML Editor\\HTML Editor.csproj": {}
+  },
+  "projects": {
+    "C:\\Users\\aantoniou\\source\\repos\\HTML Editor\\HTML Editor\\HTML Editor.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\aantoniou\\source\\repos\\HTML Editor\\HTML Editor\\HTML Editor.csproj",
+        "projectName": "HTML Editor",
+        "projectPath": "C:\\Users\\aantoniou\\source\\repos\\HTML Editor\\HTML Editor\\HTML Editor.csproj",
+        "packagesPath": "C:\\Users\\aantoniou\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\aantoniou\\source\\repos\\HTML Editor\\HTML Editor\\obj\\",
+        "projectStyle": "PackageReference",
+        "skipContentFileWrite": true,
+        "configFilePaths": [
+          "C:\\Users\\aantoniou\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net48"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net48": {
+            "projectReferences": {}
+          }
+        }
+      },
+      "frameworks": {
+        "net48": {
+          "dependencies": {
+            "HtmlAgilityPack": {
+              "target": "Package",
+              "version": "[1.11.71, )"
+            },
+            "Microsoft.Web.WebView2": {
+              "target": "Package",
+              "version": "[1.0.2903.40, )"
+            },
+            "System.Text.Json": {
+              "target": "Package",
+              "version": "[8.0.5, )"
+            }
+          }
+        }
+      },
+      "runtimes": {
+        "win": {
+          "#import": []
+        },
+        "win-x64": {
+          "#import": []
+        },
+        "win-x86": {
+          "#import": []
+        }
+      }
+    }
+  }
+}
