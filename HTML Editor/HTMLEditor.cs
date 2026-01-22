@@ -43,11 +43,89 @@ namespace HTML_Editor
                 // We intercept requests to "http://email.content" and serve your local files.
                 webView.CoreWebView2.WebResourceRequested += CoreWebView2_WebResourceRequested;
                 webView.CoreWebView2.AddWebResourceRequestedFilter("http://email.content/*", CoreWebView2WebResourceContext.All);
+
+                // Inject paste/drag handlers for local images after each navigation.
+                webView.CoreWebView2.NavigationCompleted += async (s, e) =>
+                {
+                    if (e.IsSuccess)
+                    {
+                        await InjectImagePasteHandlersAsync();
+                    }
+                };
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Error initializing browser: " + ex.Message);
             }
+        }
+
+        private async Task InjectImagePasteHandlersAsync()
+        {
+            string script = @"
+(function () {
+  if (window.__htmlEditorImagePasteHook) return;
+  window.__htmlEditorImagePasteHook = true;
+
+  function insertImage(dataUrl) {
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      range.insertNode(img);
+      range.setStartAfter(img);
+      range.setEndAfter(img);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } else {
+      (document.body || document.documentElement).appendChild(img);
+    }
+  }
+
+  function handleFiles(files) {
+    Array.from(files || []).forEach(file => {
+      if (!file || !file.type || !file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onload = e => insertImage(e.target.result);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  document.addEventListener('paste', function (e) {
+    const dt = e.clipboardData;
+    if (!dt) return;
+    if (dt.files && dt.files.length) {
+      e.preventDefault();
+      handleFiles(dt.files);
+      return;
+    }
+    if (dt.items) {
+      const items = Array.from(dt.items);
+      const imageItems = items.filter(i => i.kind === 'file' && i.type && i.type.startsWith('image/'));
+      if (imageItems.length) {
+        e.preventDefault();
+        imageItems.forEach(i => handleFiles([i.getAsFile()]));
+      }
+    }
+  });
+
+  document.addEventListener('drop', function (e) {
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    const hasImage = Array.from(e.dataTransfer.files).some(f => f.type && f.type.startsWith('image/'));
+    if (!hasImage) return;
+    e.preventDefault();
+    handleFiles(e.dataTransfer.files);
+  });
+
+  document.addEventListener('dragover', function (e) {
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      e.preventDefault();
+    }
+  });
+})();";
+
+            await webView.ExecuteScriptAsync(script);
         }
 
         // This function handles loading images from your _files folder automatically - works
@@ -65,12 +143,20 @@ namespace HTML_Editor
                 string relativePath = uri.Replace("http://email.content/", "");
                 if (relativePath.Contains("?")) relativePath = relativePath.Split('?')[0];
 
-                string fullPath = Path.Combine(currentEmailDirectory, Uri.UnescapeDataString(relativePath));
+                string decodedPath = Uri.UnescapeDataString(relativePath).Replace('/', Path.DirectorySeparatorChar);
+                string fullPath = Path.Combine(currentEmailDirectory, decodedPath);
 
                 if (File.Exists(fullPath))
                 {
+                    string ext = Path.GetExtension(fullPath).ToLower();
+                    string mime = "image/png";
+                    if (ext == ".jpg" || ext == ".jpeg") mime = "image/jpeg";
+                    else if (ext == ".gif") mime = "image/gif";
+                    else if (ext == ".bmp") mime = "image/bmp";
+                    else if (ext == ".webp") mime = "image/webp";
+
                     var stream = File.OpenRead(fullPath);
-                    e.Response = webView.CoreWebView2.Environment.CreateWebResourceResponse(stream, 200, "OK", "Content-Type: image/png"); // Simplification for images
+                    e.Response = webView.CoreWebView2.Environment.CreateWebResourceResponse(stream, 200, "OK", $"Content-Type: {mime}");
                 }
             }
         }
@@ -94,8 +180,8 @@ namespace HTML_Editor
                 currentFilePath = filePath;
                 currentEmailDirectory = Path.GetDirectoryName(filePath);
 
-                // Load the HTML using Windows-1252 encoding (standard for Outlook)
-                string rawHtml = File.ReadAllText(filePath, Encoding.GetEncoding("windows-1252"));
+                // Load the HTML using UTF-8 so the WebView matches saved output.
+                string rawHtml = File.ReadAllText(filePath, Encoding.UTF8);
                 originalRawHtml = rawHtml;
 
                 var doc = new HtmlAgilityPack.HtmlDocument();
@@ -119,7 +205,7 @@ namespace HTML_Editor
                     }
                 }
 
-                currentEmailHtml = doc.DocumentNode.OuterHtml;
+                currentEmailHtml = NormalizeCharsetToUtf8(doc.DocumentNode.OuterHtml);
 
                 // 3. Navigate to the virtual page
                 webView.CoreWebView2.Navigate($"http://email.content/editor.html?t={DateTime.Now.Ticks}");
@@ -133,7 +219,7 @@ namespace HTML_Editor
         private string ExtractSubject(HtmlAgilityPack.HtmlDocument doc)
         {
             // Read raw HTML directly - HAP corrupts malformed Outlook HTML
-            string rawHtml = File.ReadAllText(currentFilePath, Encoding.GetEncoding("windows-1252"));
+            string rawHtml = File.ReadAllText(currentFilePath, Encoding.UTF8);
 
             originalSubjectParagraphHtml = "";
             originalSubjectText = "";
@@ -188,7 +274,10 @@ namespace HTML_Editor
 
                 if (sfd.ShowDialog() == DialogResult.OK)
                 {
+                    // SaveEmailAsync now handles copying images from the old location automatically
                     await SaveEmailAsync(sfd.FileName);
+
+                    // Now update our current tracking to the new file
                     currentFilePath = sfd.FileName;
                     currentEmailDirectory = Path.GetDirectoryName(sfd.FileName);
                 }
@@ -199,9 +288,32 @@ namespace HTML_Editor
         {
             try
             {
-                // Get edited HTML from browser
-                string scriptResult = await webView.ExecuteScriptAsync("document.documentElement.outerHTML");
+                // 1. Get edited HTML from browser
+                // Convert any blob: images (e.g. pasted images) into data: URLs before fetching
+                string scriptResult = await webView.ExecuteScriptAsync(@"(async () => {
+  try {
+    const imgs = Array.from(document.querySelectorAll('img')).filter(i => (i.currentSrc || i.src || '').startsWith('blob:'));
+    for (const img of imgs) {
+      const url = img.currentSrc || img.src;
+      const resp = await fetch(url);
+      const blob = await resp.blob();
+      const dataUrl = await new Promise(resolve => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(fr.result);
+        fr.readAsDataURL(blob);
+      });
+      img.src = dataUrl;
+    }
+  } catch (e) { /* ignore */ }
+  return document.documentElement.outerHTML;
+})();");
                 string editedHtml = UnwrapWebViewScriptStringResult(scriptResult);
+
+                if (!IsProbablyHtml(editedHtml))
+                {
+                    string simpleResult = await webView.ExecuteScriptAsync("document.documentElement.outerHTML");
+                    editedHtml = UnwrapWebViewScriptStringResult(simpleResult);
+                }
 
                 if (!IsProbablyHtml(editedHtml))
                 {
@@ -209,13 +321,17 @@ namespace HTML_Editor
                     return;
                 }
 
-                // 1. Extract just the body content between our markers (preserves Outlook head/styles)
-                string editedBodyInner = ExtractEditedBodyInner(editedHtml);
+                // 2. Setup paths
+                string targetDir = Path.GetFullPath(Path.GetDirectoryName(targetPath));
+                string filesFolderName = Path.GetFileNameWithoutExtension(targetPath) + "_files";
+                string filesFolderPath = Path.Combine(targetDir, filesFolderName);
 
-                // 2. Clean up "editable" markers inside the body fragment
+                // 3. Extract and process the body content
+                string editedBodyInner = ExtractEditedBodyInner(editedHtml);
                 var bodyDoc = new HtmlAgilityPack.HtmlDocument();
                 bodyDoc.LoadHtml(editedBodyInner ?? string.Empty);
 
+                // Remove editing markers
                 var editableNodes = bodyDoc.DocumentNode.SelectNodes("//*[@contenteditable]");
                 if (editableNodes != null)
                 {
@@ -226,38 +342,292 @@ namespace HTML_Editor
                     }
                 }
 
-                // 3. Reconstruct the Subject paragraph in the specific format requested
-                var subjectPara = bodyDoc.DocumentNode.SelectSingleNode("//p[@data-subject-para='true']");
-                string newSubjectParaHtml = $@"<p class=MsoNormal style='margin-left:135.0pt;text-indent:-135.0pt;tab-stops:135pt;mso-layout-grid-align:none;text-autospace:none'><b><span lang=EN-US style='font-family:""Calibri"",sans-serif;color:black;'>Subject:<span style='mso-tab-count:1'></span></span></b><span lang=EN-US style='font-family:""Calibri"",sans-serif;mso-font-kerning:0pt'>{WebUtility.HtmlEncode(txtSubject.Text)}<o:p></o:p></span></p>";
+                // 4. Process images: normalize/copy/persist images and update HTML paths.
+                // Returns the filenames that are actually referenced in the HTML or XML.
+                string sourceFilesFolderName = Path.GetFileNameWithoutExtension(currentFilePath) + "_files";
+                string sourceFilesFolderPath = Path.Combine(currentEmailDirectory, sourceFilesFolderName);
+                HashSet<string> usedFiles = ProcessImagesForSave(
+                    bodyDoc,
+                    filesFolderPath,
+                    filesFolderName,
+                    sourceFilesFolderPath,
+                    sourceFilesFolderName);
 
-                if (subjectPara != null)
-                {
-                    var newNode = HtmlNode.CreateNode(newSubjectParaHtml);
-                    subjectPara.ParentNode.ReplaceChild(newNode, subjectPara);
-                }
-                else
-                {
-                    // If not found, prepend it to the body
-                    var newNode = HtmlNode.CreateNode(newSubjectParaHtml);
-                    bodyDoc.DocumentNode.PrependChild(newNode);
-                }
+                // Copy non-image files (e.g., XML/theme data) into the new _files folder on Save As.
+                CopyNonImageFiles(sourceFilesFolderPath, filesFolderPath);
 
-                string bodyFragment = bodyDoc.DocumentNode.InnerHtml;
+                // NOTE: We no longer delete any files from _files so users can undo safely.
 
-                // 4. Preserve original head/attributes for Outlook: replace only the <body> content
-                string finalHtml = editedHtml;
-                if (!string.IsNullOrWhiteSpace(originalRawHtml)
-                    && TryReplaceBodyInnerHtml(originalRawHtml, bodyFragment, out var mergedHtml))
+                // 5. Reconstruct Subject paragraph
+                string bodyFragment = ReconstructSubject(bodyDoc.DocumentNode.InnerHtml, txtSubject.Text);
+
+                // 6. Final Assembly: Merge with original head or create new doc
+                string finalHtml;
+                if (!string.IsNullOrWhiteSpace(originalRawHtml) && TryReplaceBodyInnerHtml(originalRawHtml, bodyFragment, out var mergedHtml))
                 {
                     finalHtml = mergedHtml;
                 }
+                else
+                {
+                    // Fallback: If merging fails, we must still use the processed bodyFragment
+                    finalHtml = $"<!DOCTYPE html><html><head><meta charset=\"windows-1252\"></head><body>{bodyFragment}</body></html>";
+                }
 
-                File.WriteAllText(targetPath, finalHtml, Encoding.GetEncoding("windows-1252"));
-                MessageBox.Show("Saved!");
+                // Ensure the output HTML declares UTF-8 so Unicode characters are preserved.
+                finalHtml = NormalizeCharsetToUtf8(finalHtml);
+                File.WriteAllText(targetPath, finalHtml, new UTF8Encoding(false));
+                MessageBox.Show($"Saved! Found {usedFiles.Count} images.");
             }
             catch (Exception ex)
             {
                 MessageBox.Show("Error saving: " + ex.Message);
+            }
+        }
+
+        // Image pipeline: collect all image references, persist pasted images, normalize paths,
+        // and return the set of filenames that are still referenced.
+        private HashSet<string> ProcessImagesForSave(
+            HtmlAgilityPack.HtmlDocument doc,
+            string filesFolderPath,
+            string filesFolderName,
+            string sourceFilesFolderPath,
+            string sourceFilesFolderName)
+        {
+            var usedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Find all image tags, including Outlook's VML <v:imagedata> nodes.
+            var nodes = doc.DocumentNode.Descendants()
+                .Where(n => n.Name.Equals("img", StringComparison.OrdinalIgnoreCase) ||
+                           n.Name.Equals("imagedata", StringComparison.OrdinalIgnoreCase) ||
+                           n.Name.EndsWith(":imagedata", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (nodes.Count == 0) return usedFiles;
+
+            // Ensure the directory exists if there are any images to save.
+            if (!Directory.Exists(filesFolderPath))
+            {
+                try { Directory.CreateDirectory(filesFolderPath); }
+                catch (Exception ex) { MessageBox.Show("Could not create images folder: " + ex.Message); return usedFiles; }
+            }
+
+            int newImageCounter = 1;
+
+            foreach (var node in nodes)
+            {
+                // Detect the correct attribute (Outlook imagedata can use src, v:src, or o:href).
+                string srcAttr = "src";
+                if (node.Name.Contains("imagedata"))
+                {
+                    if (node.Attributes.Contains("src")) srcAttr = "src";
+                    else if (node.Attributes.Contains("v:src")) srcAttr = "v:src";
+                    else if (node.Attributes.Contains("o:href")) srcAttr = "o:href";
+                }
+
+                string src = node.GetAttributeValue(srcAttr, "").Trim();
+                if (string.IsNullOrWhiteSpace(src)) continue;
+
+                string newFileName = null;
+
+                // 1. Pasted images arrive as data: URLs; persist them to disk and replace src.
+                if (src.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+                {
+                    bool dataUrlFailed = false;
+                    try
+                    {
+                        int commaIndex = src.IndexOf(',');
+                        if (commaIndex > 0)
+                        {
+                            string header = src.Substring(0, commaIndex);
+                            string base64Data = src.Substring(commaIndex + 1).Trim();
+
+                            // Determine file extension from the data URL header.
+                            string ext = ".png";
+                            if (header.Contains("image/jpeg")) ext = ".jpg";
+                            else if (header.Contains("image/gif")) ext = ".gif";
+                            else if (header.Contains("image/bmp")) ext = ".bmp";
+                            else if (header.Contains("image/webp")) ext = ".webp";
+
+                            // Generate a unique filename in the _files folder.
+                            newFileName = $"new_image{newImageCounter:000}{ext}";
+                            while (File.Exists(Path.Combine(filesFolderPath, newFileName)))
+                            {
+                                newImageCounter++;
+                                newFileName = $"new_image{newImageCounter:000}{ext}";
+                            }
+
+                            byte[] bytes = Convert.FromBase64String(base64Data);
+                            File.WriteAllBytes(Path.Combine(filesFolderPath, newFileName), bytes);
+                            newImageCounter++;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        dataUrlFailed = true;
+                        System.Diagnostics.Debug.WriteLine("Failed to save pasted image: " + ex.Message);
+                        MessageBox.Show("Failed to save a pasted image. It will remain embedded in the HTML until saved correctly.\n\n" + ex.Message);
+                    }
+
+                    // If conversion failed, keep the original data URL so the image does not disappear.
+                    if (dataUrlFailed) newFileName = null;
+                }
+                // 2. Existing images: resolve to a local file and ensure it exists in _files.
+                else
+                {
+                    string srcNoQuery = src.Split('?')[0];
+                    string unescapedSrc = Uri.UnescapeDataString(srcNoQuery);
+                    string sourcePath = null;
+
+                    // If it's a browser virtual path, translate it to the original directory.
+                    if (unescapedSrc.StartsWith("http://email.content/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string rel = unescapedSrc.Replace("http://email.content/", "");
+                        sourcePath = Path.Combine(currentEmailDirectory, rel.Replace('/', Path.DirectorySeparatorChar));
+                    }
+                    // If it's already a relative path (e.g. from a previous save), resolve it.
+                    else if (!unescapedSrc.Contains("://") && !Path.IsPathRooted(unescapedSrc))
+                    {
+                        sourcePath = Path.Combine(currentEmailDirectory, unescapedSrc.Replace('/', Path.DirectorySeparatorChar));
+                    }
+
+                    // Fallback: if the HTML points to a wrong _files folder name, use just the filename
+                    // and look for it in the current email's _files folder.
+                    if (string.IsNullOrEmpty(sourcePath) || !File.Exists(sourcePath))
+                    {
+                        string fileName = Path.GetFileName(unescapedSrc.Replace('/', Path.DirectorySeparatorChar));
+                        if (!string.IsNullOrEmpty(fileName))
+                        {
+                            string candidate = Path.Combine(currentEmailDirectory, sourceFilesFolderName, fileName);
+                            if (File.Exists(candidate))
+                            {
+                                sourcePath = candidate;
+                            }
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(sourcePath) && File.Exists(sourcePath))
+                    {
+                        newFileName = Path.GetFileName(sourcePath);
+                        string destPath = Path.Combine(filesFolderPath, newFileName);
+
+                        // Copy to the target _files folder if it's not already there (important for Save As).
+                        if (string.Compare(Path.GetFullPath(sourcePath), Path.GetFullPath(destPath), true) != 0)
+                        {
+                            try { File.Copy(sourcePath, destPath, true); }
+                            catch { /* ignore copy errors for locked files */ }
+                        }
+                    }
+                }
+
+                // If we successfully saved/located the file, update the HTML and mark it as used.
+                if (!string.IsNullOrEmpty(newFileName))
+                {
+                    node.SetAttributeValue(srcAttr, $"{filesFolderName}/{newFileName}");
+                    usedFiles.Add(newFileName);
+                }
+            }
+
+            // Also keep any image files referenced in Outlook XML (e.g., filelist.xml).
+            MergeXmlReferencedImages(sourceFilesFolderPath, filesFolderPath, usedFiles);
+
+            return usedFiles;
+        }
+
+        private static void MergeXmlReferencedImages(string sourceFilesFolderPath, string targetFilesFolderPath, HashSet<string> usedFiles)
+        {
+            if (string.IsNullOrWhiteSpace(sourceFilesFolderPath) || !Directory.Exists(sourceFilesFolderPath)) return;
+
+            string fileListPath = Path.Combine(sourceFilesFolderPath, "filelist.xml");
+            if (!File.Exists(fileListPath)) return;
+
+            string xml;
+            try
+            {
+                xml = File.ReadAllText(fileListPath);
+            }
+            catch
+            {
+                return;
+            }
+
+            var matches = Regex.Matches(
+                xml,
+                @"([A-Za-z0-9 _\-\.\(\)]+)\.(png|jpg|jpeg|gif|bmp|webp|tif|tiff|ico|emf|wmf)",
+                RegexOptions.IgnoreCase);
+
+            foreach (Match match in matches)
+            {
+                if (!match.Success) continue;
+                string fileName = match.Value;
+                if (!IsImageFileName(fileName)) continue;
+
+                usedFiles.Add(fileName);
+
+                string sourcePath = Path.Combine(sourceFilesFolderPath, fileName);
+                if (!File.Exists(sourcePath)) continue;
+
+                if (!Directory.Exists(targetFilesFolderPath))
+                {
+                    try { Directory.CreateDirectory(targetFilesFolderPath); }
+                    catch { return; }
+                }
+
+                string destPath = Path.Combine(targetFilesFolderPath, fileName);
+                if (!File.Exists(destPath))
+                {
+                    try { File.Copy(sourcePath, destPath, true); } catch { }
+                }
+            }
+        }
+
+        private static void CopyNonImageFiles(string sourceFilesFolderPath, string targetFilesFolderPath)
+        {
+            if (string.IsNullOrWhiteSpace(sourceFilesFolderPath) || !Directory.Exists(sourceFilesFolderPath)) return;
+
+            if (!Directory.Exists(targetFilesFolderPath))
+            {
+                try { Directory.CreateDirectory(targetFilesFolderPath); }
+                catch { return; }
+            }
+
+            foreach (var file in Directory.GetFiles(sourceFilesFolderPath))
+            {
+                string fileName = Path.GetFileName(file);
+                if (IsImageFileName(fileName)) continue;
+
+                string destPath = Path.Combine(targetFilesFolderPath, fileName);
+                try { File.Copy(file, destPath, true); } catch { /* ignore copy errors */ }
+            }
+        }
+
+        private static bool IsImageFileName(string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(fileName)) return false;
+            string ext = Path.GetExtension(fileName).ToLowerInvariant();
+            return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif"
+                || ext == ".bmp" || ext == ".webp" || ext == ".tif" || ext == ".tiff"
+                || ext == ".ico" || ext == ".emf" || ext == ".wmf";
+        }
+
+        private void ManageFilesFolder(string oldPath, string newPath)
+        {
+            if (string.IsNullOrEmpty(oldPath)) return;
+
+            string oldFolder = Path.Combine(Path.GetDirectoryName(oldPath), Path.GetFileNameWithoutExtension(oldPath) + "_files");
+            string newFolder = Path.Combine(Path.GetDirectoryName(newPath), Path.GetFileNameWithoutExtension(newPath) + "_files");
+
+            if (Directory.Exists(oldFolder) &&
+                string.Compare(Path.GetFullPath(oldFolder), Path.GetFullPath(newFolder), StringComparison.OrdinalIgnoreCase) != 0)
+            {
+                if (!Directory.Exists(newFolder)) Directory.CreateDirectory(newFolder);
+                foreach (string file in Directory.GetFiles(oldFolder))
+                {
+                    try
+                    {
+                        File.Copy(file, Path.Combine(newFolder, Path.GetFileName(file)), true);
+                    }
+                    catch { /* ignore copy errors for individual files */ }
+                }
             }
         }
 
@@ -279,6 +649,39 @@ namespace HTML_Editor
                 + newBodyInner
                 + originalHtml.Substring(bodyClose);
             return true;
+        }
+
+        private string ReconstructSubject(string html, string newSubject)
+        {
+            // Reconstruct the Subject paragraph in the specific format requested
+            string newSubjectParaHtml = $@"<p class=MsoNormal style='margin-left:135.0pt;text-indent:-135.0pt;tab-stops:135pt;mso-layout-grid-align:none;text-autospace:none'><b><span lang=EN-US style='font-family:""Calibri"",sans-serif;color:black;'>Subject:<span style='mso-tab-count:1'></span></span></b><span lang=EN-US style='font-family:""Calibri"",sans-serif;mso-font-kerning:0pt'>{WebUtility.HtmlEncode(newSubject)}<o:p></o:p></span></p>";
+
+            // Try replacing the paragraph that has our marker
+            int markerPos = html.IndexOf("data-subject-para=\"true\"", StringComparison.OrdinalIgnoreCase);
+            if (markerPos >= 0)
+            {
+                int pStart = html.LastIndexOf("<p", markerPos, StringComparison.OrdinalIgnoreCase);
+                int pEndTag = html.IndexOf("</p>", markerPos, StringComparison.OrdinalIgnoreCase);
+                if (pStart >= 0 && pEndTag >= 0)
+                {
+                    string oldPara = html.Substring(pStart, pEndTag - pStart + 4);
+                    return html.Replace(oldPara, newSubjectParaHtml);
+                }
+            }
+
+            // Fallback: look for Subject: text in a paragraph
+            var match = Regex.Match(
+                html,
+                @"<p\b[^>]*>.*?Subject:.*?</p>",
+                RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+            if (match.Success)
+            {
+                return html.Remove(match.Index, match.Length).Insert(match.Index, newSubjectParaHtml);
+            }
+
+            // If not found, prepend it
+            return newSubjectParaHtml + html;
         }
 
         private static string ExtractEditedBodyInner(string editedHtml)
@@ -426,6 +829,37 @@ namespace HTML_Editor
             return t.IndexOf("<html", StringComparison.OrdinalIgnoreCase) >= 0
                 || t.IndexOf("<body", StringComparison.OrdinalIgnoreCase) >= 0
                 || t.StartsWith("<!DOCTYPE", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string NormalizeCharsetToUtf8(string html)
+        {
+            if (string.IsNullOrEmpty(html)) return html;
+
+            // Replace <meta charset="..."> if present.
+            string updated = Regex.Replace(
+                html,
+                @"(<meta\b[^>]*charset\s*=\s*)(['""]?)[^'"">\s]+(\2[^>]*>)",
+                "$1$2utf-8$3",
+                RegexOptions.IgnoreCase);
+
+            // Replace content-type meta if present.
+            updated = Regex.Replace(
+                updated,
+                @"(<meta\b[^>]*http-equiv\s*=\s*['""]?content-type['""]?[^>]*content\s*=\s*['""]text/html;\s*charset=)([^'""]+)(['""])",
+                "$1utf-8$3",
+                RegexOptions.IgnoreCase);
+
+            // If no charset meta is found, insert one after <head>.
+            if (!Regex.IsMatch(updated, @"<meta\b[^>]*charset\s*=", RegexOptions.IgnoreCase))
+            {
+                updated = Regex.Replace(
+                    updated,
+                    @"<head\b[^>]*>",
+                    m => m.Value + "<meta charset=\"utf-8\">",
+                    RegexOptions.IgnoreCase);
+            }
+
+            return updated;
         }
 
         private string ExtractSubjectTextFromParagraph(string paragraphHtml)
