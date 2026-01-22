@@ -356,6 +356,9 @@ namespace HTML_Editor
                 // Copy non-image files (e.g., XML/theme data) into the new _files folder on Save As.
                 CopyNonImageFiles(sourceFilesFolderPath, filesFolderPath);
 
+                // Update filelist.xml to list only images referenced by the email.
+                UpdateFileListXml(filesFolderPath, targetPath, usedFiles);
+
                 // NOTE: We no longer delete any files from _files so users can undo safely.
 
                 // 5. Reconstruct Subject paragraph
@@ -411,7 +414,7 @@ namespace HTML_Editor
                 catch (Exception ex) { MessageBox.Show("Could not create images folder: " + ex.Message); return usedFiles; }
             }
 
-            int newImageCounter = 1;
+            int newImageCounter = GetNextNewImageCounter(filesFolderPath);
 
             foreach (var node in nodes)
             {
@@ -533,6 +536,27 @@ namespace HTML_Editor
             return usedFiles;
         }
 
+        private static int GetNextNewImageCounter(string filesFolderPath)
+        {
+            if (string.IsNullOrWhiteSpace(filesFolderPath) || !Directory.Exists(filesFolderPath))
+            {
+                return 1;
+            }
+
+            int max = 0;
+            foreach (var file in Directory.GetFiles(filesFolderPath))
+            {
+                string name = Path.GetFileName(file);
+                var match = Regex.Match(name, @"^new_image(\d{3})\.", RegexOptions.IgnoreCase);
+                if (match.Success && int.TryParse(match.Groups[1].Value, out int n))
+                {
+                    if (n > max) max = n;
+                }
+            }
+
+            return max + 1;
+        }
+
         private static void MergeXmlReferencedImages(string sourceFilesFolderPath, string targetFilesFolderPath, HashSet<string> usedFiles)
         {
             if (string.IsNullOrWhiteSpace(sourceFilesFolderPath) || !Directory.Exists(sourceFilesFolderPath)) return;
@@ -597,6 +621,44 @@ namespace HTML_Editor
 
                 string destPath = Path.Combine(targetFilesFolderPath, fileName);
                 try { File.Copy(file, destPath, true); } catch { /* ignore copy errors */ }
+            }
+        }
+
+        private static void UpdateFileListXml(string targetFilesFolderPath, string targetHtmlPath, HashSet<string> usedFiles)
+        {
+            if (string.IsNullOrWhiteSpace(targetFilesFolderPath) || !Directory.Exists(targetFilesFolderPath)) return;
+            if (usedFiles == null) return;
+
+            string htmlFileName = Path.GetFileName(targetHtmlPath);
+            if (string.IsNullOrWhiteSpace(htmlFileName)) return;
+
+            string mainHref = "../" + Uri.EscapeDataString(htmlFileName);
+            var imageFiles = usedFiles
+                .Where(name => IsImageFileName(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var sb = new StringBuilder();
+            sb.AppendLine("<xml xmlns:o=\"urn:schemas-microsoft-com:office:office\">");
+            sb.AppendLine($" <o:MainFile HRef=\"{mainHref}\"/>");
+
+            foreach (var file in imageFiles)
+            {
+                string href = Uri.EscapeDataString(file);
+                sb.AppendLine($" <o:File HRef=\"{href}\"/>");
+            }
+
+            sb.AppendLine("</xml>");
+
+            string fileListPath = Path.Combine(targetFilesFolderPath, "filelist.xml");
+            try
+            {
+                File.WriteAllText(fileListPath, sb.ToString(), new UTF8Encoding(false));
+            }
+            catch
+            {
+                // Ignore filelist write errors to avoid blocking save.
             }
         }
 
