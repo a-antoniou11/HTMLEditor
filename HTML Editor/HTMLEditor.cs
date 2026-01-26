@@ -260,7 +260,14 @@ namespace HTML_Editor
         private async void btnSave_Click(object sender, EventArgs e)
         {
             if (string.IsNullOrEmpty(currentFilePath)) return;
-            await SaveEmailAsync(currentFilePath);
+            try
+            {
+                await SaveEmailAsync(currentFilePath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Error during save: " + ex.Message);
+            }
         }
 
         private async void btnSaveAs_Click(object sender, EventArgs e)
@@ -274,12 +281,95 @@ namespace HTML_Editor
 
                 if (sfd.ShowDialog() == DialogResult.OK)
                 {
-                    // SaveEmailAsync now handles copying images from the old location automatically
-                    await SaveEmailAsync(sfd.FileName);
+                    try
+                    {
+                        // SaveEmailAsync now handles copying images from the old location automatically
+                        await SaveEmailAsync(sfd.FileName);
 
-                    // Now update our current tracking to the new file
-                    currentFilePath = sfd.FileName;
-                    currentEmailDirectory = Path.GetDirectoryName(sfd.FileName);
+                        // Now update our tracking to the new file
+                        currentFilePath = sfd.FileName;
+                        currentEmailDirectory = Path.GetDirectoryName(sfd.FileName);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("Error during save as: " + ex.Message);
+                    }
+                }
+            }
+        }
+
+        private async void btnBold_Click(object sender, EventArgs e)
+        {
+            await webView.ExecuteScriptAsync("document.execCommand('bold', false, null);");
+        }
+
+        private async void btnItalic_Click(object sender, EventArgs e)
+        {
+            await webView.ExecuteScriptAsync("document.execCommand('italic', false, null);");
+        }
+
+        private async void btnUnderline_Click(object sender, EventArgs e)
+        {
+            await webView.ExecuteScriptAsync("document.execCommand('underline', false, null);");
+        }
+
+        private async void cmbFontFamily_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string font = cmbFontFamily.SelectedItem.ToString();
+            await webView.ExecuteScriptAsync($"document.execCommand('fontName', false, '{font}');");
+        }
+
+        private async void cmbFontSize_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            string size = cmbFontSize.SelectedItem.ToString();
+            // execCommand font size uses 1-7
+            string webSize = "3";
+            switch (size)
+            {
+                case "8": webSize = "1"; break;
+                case "10": webSize = "2"; break;
+                case "12": webSize = "3"; break;
+                case "14": webSize = "4"; break;
+                case "18": webSize = "5"; break;
+                case "24": webSize = "6"; break;
+                case "36": webSize = "7"; break;
+            }
+            await webView.ExecuteScriptAsync($"document.execCommand('fontSize', false, '{webSize}');");
+        }
+
+        private async void btnAlignLeft_Click(object sender, EventArgs e)
+        {
+            await webView.ExecuteScriptAsync("document.execCommand('justifyLeft', false, null);");
+        }
+
+        private async void btnAlignCenter_Click(object sender, EventArgs e)
+        {
+            await webView.ExecuteScriptAsync("document.execCommand('justifyCenter', false, null);");
+        }
+
+        private async void btnAlignRight_Click(object sender, EventArgs e)
+        {
+            await webView.ExecuteScriptAsync("document.execCommand('justifyRight', false, null);");
+        }
+
+        private async void btnUndo_Click(object sender, EventArgs e)
+        {
+            await webView.ExecuteScriptAsync("document.execCommand('undo', false, null);");
+        }
+
+        private async void btnRedo_Click(object sender, EventArgs e)
+        {
+            await webView.ExecuteScriptAsync("document.execCommand('redo', false, null);");
+        }
+
+        private async void btnColor_Click(object sender, EventArgs e)
+        {
+            using (ColorDialog cd = new ColorDialog())
+            {
+                if (cd.ShowDialog() == DialogResult.OK)
+                {
+                    string hexColor = $"#{cd.Color.R:X2}{cd.Color.G:X2}{cd.Color.B:X2}";
+                    await webView.ExecuteScriptAsync($"document.execCommand('foreColor', false, '{hexColor}');");
                 }
             }
         }
@@ -344,8 +434,8 @@ namespace HTML_Editor
 
                 // 4. Process images: normalize/copy/persist images and update HTML paths.
                 // Returns the filenames that are actually referenced in the HTML or XML.
-                string sourceFilesFolderName = Path.GetFileNameWithoutExtension(currentFilePath) + "_files";
-                string sourceFilesFolderPath = Path.Combine(currentEmailDirectory, sourceFilesFolderName);
+                string sourceFilesFolderName = !string.IsNullOrEmpty(currentFilePath) ? Path.GetFileNameWithoutExtension(currentFilePath) + "_files" : "";
+                string sourceFilesFolderPath = !string.IsNullOrEmpty(currentEmailDirectory) ? Path.Combine(currentEmailDirectory, sourceFilesFolderName) : "";
                 HashSet<string> usedFiles = ProcessImagesForSave(
                     bodyDoc,
                     filesFolderPath,
@@ -354,7 +444,10 @@ namespace HTML_Editor
                     sourceFilesFolderName);
 
                 // Copy non-image files (e.g., XML/theme data) into the new _files folder on Save As.
-                CopyNonImageFiles(sourceFilesFolderPath, filesFolderPath);
+                if (!string.IsNullOrEmpty(sourceFilesFolderPath))
+                {
+                    CopyNonImageFiles(sourceFilesFolderPath, filesFolderPath);
+                }
 
                 // Update filelist.xml to list only images referenced by the email.
                 UpdateFileListXml(filesFolderPath, targetPath, usedFiles);
