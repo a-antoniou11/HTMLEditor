@@ -22,14 +22,27 @@ namespace HTML_Editor
         private string currentEmailDirectory = "";
         private string originalRawHtml = "";
 
-        // Store original subject paragraph HTML to avoid HAP corruption
         private string originalSubjectParagraphHtml = "";
         private string originalSubjectText = "";
+
+        private bool isModified = false;
 
         public HTMLEditor()
         {
             InitializeComponent();
             InitializeWebView();
+
+            // Track subject changes only if an email is loaded
+            txtSubject.TextChanged += (s, e) => 
+            {
+                if (!string.IsNullOrEmpty(currentFilePath))
+                {
+                    isModified = true;
+                }
+            };
+
+            // Handle form closing to warn about unsaved changes
+            this.FormClosing += HTMLEditor_FormClosing;
         }
 
         private async void InitializeWebView()
@@ -38,6 +51,15 @@ namespace HTML_Editor
             {
                 // This prepares the browser engine
                 await webView.EnsureCoreWebView2Async(null);
+
+                // Listen for modification messages from JS
+                webView.CoreWebView2.WebMessageReceived += (s, e) =>
+                {
+                    if (e.TryGetWebMessageAsString() == "modified" && !string.IsNullOrEmpty(currentFilePath))
+                    {
+                        isModified = true;
+                    }
+                };
 
                 // This is the "Messproof" secret: 
                 // We intercept requests to "http://email.content" and serve your local files.
@@ -123,6 +145,11 @@ namespace HTML_Editor
       e.preventDefault();
     }
   });
+
+  // Notify C# when content changes
+  document.addEventListener('input', function() {
+    window.chrome.webview.postMessage('modified');
+  });
 })();";
 
             await webView.ExecuteScriptAsync(script);
@@ -155,14 +182,18 @@ namespace HTML_Editor
                     else if (ext == ".bmp") mime = "image/bmp";
                     else if (ext == ".webp") mime = "image/webp";
 
-                    var stream = File.OpenRead(fullPath);
+                    // Use ReadAllBytes + MemoryStream to avoid keeping a lock on the file
+                    byte[] imageBytes = File.ReadAllBytes(fullPath);
+                    var stream = new MemoryStream(imageBytes);
                     e.Response = webView.CoreWebView2.Environment.CreateWebResourceResponse(stream, 200, "OK", $"Content-Type: {mime}");
                 }
             }
         }
 
-        private void btnOpen_Click(object sender, EventArgs e) //works
+        private async void btnOpen_Click(object sender, EventArgs e) //works
         {
+            if (!await ConfirmSaveIfModified()) return;
+
             using (OpenFileDialog openFileDialog = new OpenFileDialog())
             {
                 openFileDialog.Filter = "HTML files (*.htm;*.html)|*.htm;*.html|All files (*.*)|*.*";
@@ -170,6 +201,55 @@ namespace HTML_Editor
                 {
                     LoadEmail(openFileDialog.FileName);
                 }
+            }
+        }
+
+        private async Task<bool> ConfirmSaveIfModified()
+        {
+            if (!isModified) return true;
+
+            var result = MessageBox.Show("You have unsaved changes. Do you want to save them before proceeding?",
+                                         "Unsaved Changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+
+            if (result == DialogResult.Yes)
+            {
+                if (string.IsNullOrEmpty(currentFilePath))
+                {
+                    using (SaveFileDialog sfd = new SaveFileDialog())
+                    {
+                        sfd.Filter = "HTML files (*.htm;*.html)|*.htm;*.html";
+                        if (sfd.ShowDialog() == DialogResult.OK)
+                        {
+                            await SaveEmailAsync(sfd.FileName);
+                            return true;
+                        }
+                        return false;
+                    }
+                }
+                else
+                {
+                    await SaveEmailAsync(currentFilePath);
+                    return true;
+                }
+            }
+            return result == DialogResult.No;
+        }
+
+        private bool _isClosing = false;
+        private async void HTMLEditor_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (_isClosing) return;
+
+            if (isModified)
+            {
+                e.Cancel = true;
+                _isClosing = true;
+                if (await ConfirmSaveIfModified())
+                {
+                    isModified = false;
+                    this.Close();
+                }
+                _isClosing = false;
             }
         }
 
@@ -189,6 +269,10 @@ namespace HTML_Editor
 
                 // 1. Extract Subject into the TextBox
                 txtSubject.Text = ExtractSubject(doc);
+                filePathTxt.Text = filePath;
+
+                // Reset modification flag after loading
+                isModified = false;
 
                 // 2. Make the body editable
                 var bodyNode = doc.DocumentNode.SelectSingleNode("//body");
@@ -283,12 +367,11 @@ namespace HTML_Editor
                 {
                     try
                     {
-                        // SaveEmailAsync now handles copying images from the old location automatically
+                        // Save to the new location
                         await SaveEmailAsync(sfd.FileName);
-
-                        // Now update our tracking to the new file
-                        currentFilePath = sfd.FileName;
-                        currentEmailDirectory = Path.GetDirectoryName(sfd.FileName);
+                        
+                        // Switch focus to the new file (MS Word style)
+                        LoadEmail(sfd.FileName);
                     }
                     catch (Exception ex)
                     {
@@ -471,8 +554,27 @@ namespace HTML_Editor
 
                 // Ensure the output HTML declares UTF-8 so Unicode characters are preserved.
                 finalHtml = NormalizeCharsetToUtf8(finalHtml);
-                File.WriteAllText(targetPath, finalHtml, new UTF8Encoding(false));
-                MessageBox.Show($"Saved! Found {usedFiles.Count} images.");
+
+                // Add a small retry logic for the final file write in case of temporary locks
+                int retries = 3;
+                while (retries > 0)
+                {
+                    try
+                    {
+                        File.WriteAllText(targetPath, finalHtml, new UTF8Encoding(false));
+                        break; // Success
+                    }
+                    catch (IOException) when (retries > 1)
+                    {
+                        retries--;
+                        await Task.Delay(200); // Wait 200ms and try again
+                    }
+                }
+
+                // Reset modification flag after successful save
+                isModified = false;
+
+                MessageBox.Show($"Saved succesfully!");
             }
             catch (Exception ex)
             {
@@ -808,8 +910,9 @@ namespace HTML_Editor
 
         private string ReconstructSubject(string html, string newSubject)
         {
-            // Reconstruct the Subject paragraph in the specific format requested
-            string newSubjectParaHtml = $@"<p class=MsoNormal style='margin-left:135.0pt;text-indent:-135.0pt;tab-stops:135pt;mso-layout-grid-align:none;text-autospace:none'><b><span lang=EN-US style='font-family:""Calibri"",sans-serif;color:black;'>Subject:<span style='mso-tab-count:1'></span></span></b><span lang=EN-US style='font-family:""Calibri"",sans-serif;mso-font-kerning:0pt'>{WebUtility.HtmlEncode(newSubject)}<o:p></o:p></span></p>";
+            // Reconstruct Subject using a single canonical Outlook-style paragraph.
+            string normalizedSubject = NormalizeSubjectText(newSubject);
+            string newSubjectParaHtml = $@"<p class=MsoNormal style='margin-left:135.0pt;text-indent:-135.0pt;tab-stops:135pt;mso-layout-grid-align:none;text-autospace:none'><b><span lang=EN-US style='font-family:""Calibri"",sans-serif;color:black;'>Subject:<span style='mso-tab-count:1'></span></span></b><span lang=EN-US style='font-family:""Calibri"",sans-serif;color:black;mso-font-kerning:0pt'>{WebUtility.HtmlEncode(normalizedSubject)}<o:p></o:p></span></p>";
 
             // Try replacing the paragraph that has our marker
             int markerPos = html.IndexOf("data-subject-para=\"true\"", StringComparison.OrdinalIgnoreCase);
@@ -1019,6 +1122,38 @@ namespace HTML_Editor
 
         private string ExtractSubjectTextFromParagraph(string paragraphHtml)
         {
+            if (string.IsNullOrWhiteSpace(paragraphHtml))
+            {
+                return string.Empty;
+            }
+
+            // Prefer DOM extraction first. This is resilient for most Outlook variations.
+            try
+            {
+                var doc = new HtmlAgilityPack.HtmlDocument();
+                doc.LoadHtml(paragraphHtml);
+                var pNode = doc.DocumentNode.SelectSingleNode("//p") ?? doc.DocumentNode;
+                var spanNodes = pNode.SelectNodes(".//span");
+                if (spanNodes != null && spanNodes.Count > 0)
+                {
+                    // Subject text is usually in a later span; skip label-like spans.
+                    for (int i = spanNodes.Count - 1; i >= 0; i--)
+                    {
+                        string text = HtmlEntity.DeEntitize(spanNodes[i].InnerText ?? string.Empty);
+                        text = NormalizeSubjectText(text);
+                        if (!string.IsNullOrEmpty(text) &&
+                            !text.StartsWith("Subject:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return text;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Fall through to string-based extraction below.
+            }
+
             int boldEnd = paragraphHtml.IndexOf("</b>", StringComparison.OrdinalIgnoreCase);
             if (boldEnd >= 0)
             {
@@ -1036,7 +1171,7 @@ namespace HTML_Editor
                             spanInner = spanInner.Substring(0, oP);
 
                         string cleaned = Regex.Replace(spanInner, "<[^>]+>", string.Empty);
-                        return WebUtility.HtmlDecode(cleaned).Trim();
+                        return NormalizeSubjectText(WebUtility.HtmlDecode(cleaned));
                     }
                 }
 
@@ -1047,17 +1182,34 @@ namespace HTML_Editor
                 {
                     string between = paragraphHtml.Substring(boldEnd + 4, end - (boldEnd + 4));
                     string cleaned = Regex.Replace(between, "<[^>]+>", string.Empty);
-                    return WebUtility.HtmlDecode(cleaned).Trim();
+                    return NormalizeSubjectText(WebUtility.HtmlDecode(cleaned));
                 }
             }
 
             string plainText = Regex.Replace(paragraphHtml, "<[^>]+>", string.Empty);
-            plainText = WebUtility.HtmlDecode(plainText);
+            plainText = NormalizeSubjectText(WebUtility.HtmlDecode(plainText));
             int idx = plainText.IndexOf("Subject:", StringComparison.OrdinalIgnoreCase);
             if (idx >= 0)
-                return plainText.Substring(idx + "Subject:".Length).Trim();
+                return NormalizeSubjectText(plainText.Substring(idx + "Subject:".Length));
 
-            return plainText.Trim();
+            return plainText;
+        }
+
+        private static string NormalizeSubjectText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return string.Empty;
+            }
+
+            string normalized = text
+                .Replace('\u00A0', ' ')
+                .Replace('\t', ' ')
+                .Replace("\r", " ")
+                .Replace("\n", " ");
+
+            normalized = Regex.Replace(normalized, @"\s+", " ").Trim();
+            return normalized;
         }
     }
 }
