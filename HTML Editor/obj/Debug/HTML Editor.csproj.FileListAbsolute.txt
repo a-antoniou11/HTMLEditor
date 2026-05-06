@@ -24,6 +24,7 @@ C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML_Editor.HT
 C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML_Editor.Properties.Resources.resources
 C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.csproj.GenerateResource.cache
 C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.csproj.CoreCompileInputs.cache
-C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.csproj.CopyComplete
 C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.exe
 C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.pdb
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Editor.csproj.SuggestedBindingRedirects.cache
+C:\Users\aantoniou\source\repos\HTML Editor\HTML Editor\obj\Debug\HTML Edi.75825773.Up2Date

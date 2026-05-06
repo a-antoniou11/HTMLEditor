@@ -910,36 +910,92 @@ namespace HTML_Editor
 
         private string ReconstructSubject(string html, string newSubject)
         {
-            // Reconstruct Subject using a single canonical Outlook-style paragraph.
-            string normalizedSubject = NormalizeSubjectText(newSubject);
-            string newSubjectParaHtml = $@"<p class=MsoNormal style='margin-left:135.0pt;text-indent:-135.0pt;tab-stops:135pt;mso-layout-grid-align:none;text-autospace:none'><b><span lang=EN-US style='font-family:""Calibri"",sans-serif;color:black;'>Subject:<span style='mso-tab-count:1'></span></span></b><span lang=EN-US style='font-family:""Calibri"",sans-serif;color:black;mso-font-kerning:0pt'>{WebUtility.HtmlEncode(normalizedSubject)}<o:p></o:p></span></p>";
+            string normalizedSubject = SanitizeSubjectText(newSubject);
+            string newSubjectParaHtml = BuildCanonicalSubjectParagraph(normalizedSubject);
 
-            // Try replacing the paragraph that has our marker
-            int markerPos = html.IndexOf("data-subject-para=\"true\"", StringComparison.OrdinalIgnoreCase);
-            if (markerPos >= 0)
+            string cleaned = StripExistingSubjectParagraphs(html ?? string.Empty);
+
+            return InsertSubjectIntoWordSection(cleaned, newSubjectParaHtml);
+        }
+
+        private static string BuildCanonicalSubjectParagraph(string normalizedSubject)
+        {
+            string encoded = WebUtility.HtmlEncode(normalizedSubject ?? string.Empty);
+            return $@"<p class=MsoNormal style='margin-left:135.0pt;text-indent:-135.0pt;tab-stops:135pt;mso-layout-grid-align:none;text-autospace:none'><b><span lang=EN-US style='font-family:""Calibri"",sans-serif;color:black;>Subject:<span style='mso-tab-count:1'></b><span lang=EN-US style='font-family:""Calibri"",sans-serif;mso-font-kerning:0pt>{encoded}<o:p></o:p></span></p>";
+        }
+
+        private static string InsertSubjectIntoWordSection(string html, string subjectParaHtml)
+        {
+            string content = html ?? string.Empty;
+            if (string.IsNullOrEmpty(content))
             {
-                int pStart = html.LastIndexOf("<p", markerPos, StringComparison.OrdinalIgnoreCase);
-                int pEndTag = html.IndexOf("</p>", markerPos, StringComparison.OrdinalIgnoreCase);
-                if (pStart >= 0 && pEndTag >= 0)
-                {
-                    string oldPara = html.Substring(pStart, pEndTag - pStart + 4);
-                    return html.Replace(oldPara, newSubjectParaHtml);
-                }
+                return subjectParaHtml ?? string.Empty;
             }
 
-            // Fallback: look for Subject: text in a paragraph
-            var match = Regex.Match(
-                html,
-                @"<p\b[^>]*>.*?Subject:.*?</p>",
-                RegexOptions.Singleline | RegexOptions.IgnoreCase);
+            // Keep the subject inside WordSection1 when present, matching Outlook structure.
+            var wordSectionMatch = Regex.Match(
+                content,
+                @"<div\b[^>]*class\s*=\s*[""'][^""']*\bWordSection1\b[^""']*[""'][^>]*>",
+                RegexOptions.IgnoreCase);
 
-            if (match.Success)
+            if (wordSectionMatch.Success)
             {
-                return html.Remove(match.Index, match.Length).Insert(match.Index, newSubjectParaHtml);
+                int insertAt = wordSectionMatch.Index + wordSectionMatch.Length;
+                string formattedInsert = Environment.NewLine + Environment.NewLine + subjectParaHtml;
+                return content.Insert(insertAt, formattedInsert);
             }
 
-            // If not found, prepend it
-            return newSubjectParaHtml + html;
+            // Fallback: prepend at body start but avoid carrying leading whitespace-only lines.
+            return (subjectParaHtml ?? string.Empty) + content.TrimStart();
+        }
+
+        // Remove any prior subject paragraphs (clean OR malformed) so we never end
+        // up with duplicate or leaked-style text in the saved HTML.
+        private static string StripExistingSubjectParagraphs(string html)
+        {
+            if (string.IsNullOrEmpty(html)) return html ?? string.Empty;
+
+            string result = html;
+
+            // 1. Remove any paragraph carrying our marker attribute.
+            result = Regex.Replace(
+                result,
+                @"<p\b[^>]*data-subject-para\s*=\s*[""']?true[""']?[^>]*>[\s\S]*?</p>",
+                string.Empty,
+                RegexOptions.IgnoreCase);
+
+            // 2. Remove any paragraph that contains the literal "Subject:" text
+            //    (matches well-formed Outlook subject paragraphs).
+            result = Regex.Replace(
+                result,
+                @"<p\b[^>]*>[\s\S]*?Subject:[\s\S]*?</p>",
+                string.Empty,
+                RegexOptions.IgnoreCase);
+
+            // 3. Remove leaked style residue paragraphs (malformed previous saves
+            //    where a span attribute tail rendered as visible text).
+            result = Regex.Replace(
+                result,
+                @"<p\b[^>]*>[\s\S]{0,400}?mso-font-kerning\s*:\s*0pt['""]?\s*>[\s\S]{0,200}?</p>",
+                string.Empty,
+                RegexOptions.IgnoreCase);
+
+            // 4. Remove orphan text nodes that look like leaked attribute fragments
+            //    (e.g. "lack;mso-font-kerning:0pt'>subject") sitting outside <p>.
+            result = Regex.Replace(
+                result,
+                @"(?<=>|^)\s*[A-Za-z;:""',\.\s\-]*mso-[a-z\-]+\s*:\s*[^<]{0,200}?['""]?>\s*[^<]{0,200}?(?=<)",
+                string.Empty,
+                RegexOptions.IgnoreCase);
+
+            // 5. Catch truncated leaked fragments like "t-kerning:0pt'>test" outside tags.
+            result = Regex.Replace(
+                result,
+                @"(?<=>|^)\s*[^<]{0,40}?kerning\s*:\s*0pt\s*['""]?\s*>\s*[^<]{0,200}(?=<|$)",
+                string.Empty,
+                RegexOptions.IgnoreCase);
+
+            return result;
         }
 
         private static string ExtractEditedBodyInner(string editedHtml)
@@ -1140,7 +1196,7 @@ namespace HTML_Editor
                     for (int i = spanNodes.Count - 1; i >= 0; i--)
                     {
                         string text = HtmlEntity.DeEntitize(spanNodes[i].InnerText ?? string.Empty);
-                        text = NormalizeSubjectText(text);
+                        text = SanitizeSubjectText(text);
                         if (!string.IsNullOrEmpty(text) &&
                             !text.StartsWith("Subject:", StringComparison.OrdinalIgnoreCase))
                         {
@@ -1171,7 +1227,7 @@ namespace HTML_Editor
                             spanInner = spanInner.Substring(0, oP);
 
                         string cleaned = Regex.Replace(spanInner, "<[^>]+>", string.Empty);
-                        return NormalizeSubjectText(WebUtility.HtmlDecode(cleaned));
+                        return SanitizeSubjectText(WebUtility.HtmlDecode(cleaned));
                     }
                 }
 
@@ -1182,17 +1238,95 @@ namespace HTML_Editor
                 {
                     string between = paragraphHtml.Substring(boldEnd + 4, end - (boldEnd + 4));
                     string cleaned = Regex.Replace(between, "<[^>]+>", string.Empty);
-                    return NormalizeSubjectText(WebUtility.HtmlDecode(cleaned));
+                    return SanitizeSubjectText(WebUtility.HtmlDecode(cleaned));
                 }
             }
 
             string plainText = Regex.Replace(paragraphHtml, "<[^>]+>", string.Empty);
-            plainText = NormalizeSubjectText(WebUtility.HtmlDecode(plainText));
+            plainText = SanitizeSubjectText(WebUtility.HtmlDecode(plainText));
             int idx = plainText.IndexOf("Subject:", StringComparison.OrdinalIgnoreCase);
             if (idx >= 0)
-                return NormalizeSubjectText(plainText.Substring(idx + "Subject:".Length));
+                return SanitizeSubjectText(plainText.Substring(idx + "Subject:".Length));
 
             return plainText;
+        }
+
+        private static string SanitizeSubjectText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return string.Empty;
+            }
+
+            string sanitized = RemoveLeakedOutlookSubjectFragments(text);
+
+            // When malformed HTML leaks part of attributes into text,
+            // keep content after the last quote+angle marker.
+            int singleQuoteMarker = sanitized.LastIndexOf("'>", StringComparison.Ordinal);
+            int doubleQuoteMarker = sanitized.LastIndexOf("\">", StringComparison.Ordinal);
+            int marker = Math.Max(singleQuoteMarker, doubleQuoteMarker);
+            if (marker >= 0 && marker + 2 < sanitized.Length)
+            {
+                sanitized = sanitized.Substring(marker + 2);
+            }
+
+            sanitized = WebUtility.HtmlDecode(sanitized);
+
+            // Remove any residual tags if they leaked through.
+            sanitized = Regex.Replace(sanitized, "<[^>]*>", string.Empty, RegexOptions.Singleline);
+
+            // Remove obvious style/attribute fragments that sometimes appear as text.
+            sanitized = Regex.Replace(
+                sanitized,
+                @"\b(mso-[a-z\-]+|font-family|font-size|color|tab-stops|text-indent|margin-left)\s*:[^;>]*;?",
+                string.Empty,
+                RegexOptions.IgnoreCase);
+
+            sanitized = RemoveLeakedOutlookSubjectFragments(sanitized);
+
+            return NormalizeSubjectText(sanitized);
+        }
+
+        /// <summary>
+        /// Removes fragments produced when Outlook/HTML subject markup is broken — e.g.
+        /// <c>lack;mso-font-kerning:0pt'&gt;</c> (truncated <c>color:black;</c> plus attribute tail).
+        /// </summary>
+        private static string RemoveLeakedOutlookSubjectFragments(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return text ?? string.Empty;
+            }
+
+            string s = text;
+
+            // Literal artifacts we've seen in the wild (case-insensitive, anywhere in string).
+            foreach (string leak in new[]
+                     {
+                         "lack;mso-font-kerning:0pt'>",
+                         "lack;mso-font-kerning:0pt\">",
+                         "black;mso-font-kerning:0pt'>",
+                         "black;mso-font-kerning:0pt\">",
+                     })
+            {
+                s = Regex.Replace(s, Regex.Escape(leak), string.Empty, RegexOptions.IgnoreCase);
+            }
+
+            // Generic leading leak: optional short word fragment + mso-font-kerning:0pt + quote + >
+            s = Regex.Replace(
+                s,
+                @"^\s*(?:[a-z]{2,12};)?\s*mso-font-kerning\s*:\s*0pt\s*['""]?\s*>\s*",
+                string.Empty,
+                RegexOptions.IgnoreCase);
+
+            // Truncated versions we have seen: "...t-kerning:0pt'>"
+            s = Regex.Replace(
+                s,
+                @"^\s*(?:[a-z]{0,20};)?\s*[a-z\-]*kerning\s*:\s*0pt\s*['""]?\s*>\s*",
+                string.Empty,
+                RegexOptions.IgnoreCase);
+
+            return s;
         }
 
         private static string NormalizeSubjectText(string text)
